@@ -1,1 +1,4 @@
-# Predicting Human Behavior Github Pages README file
+## Predicting Human Behavior
+
+### Practical Machine Learning - Course Project
+
