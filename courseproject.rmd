@@ -1,0 +1,143 @@
+---
+title: "Predicting Human Behavior"
+author: "Chris Knutson"
+date: "April 9, 2016"
+output: html_document
+---
+
+
+## Predicting Human Activity
+#### Predicting the method of activity using 'Quantified Self' data
+
+### Exploring the Data
+
+The training data contains data collected from sensors that track human activity. Each data element
+includes timestamp data, but a brief exploration of the data doesn't appear to correlate outcomes to
+the timestamps, so we will not treat this as time series data.
+```{r setup, cache = T}
+library(knitr)
+opts_chunk$set(message = F, error = F, warning = F, comment = NA, fig.align = 'center', dpi = 100, tidy = F, cache.path = '.cache/', fig.path = 'images/')
+library(caret)
+library(ggplot2)
+
+data_set <- read.csv('hardata/pml-training.csv')
+data_set$fulltimestamp <- as.numeric(
+    data_set$raw_timestamp_part_1) + as.numeric(data_set$raw_timestamp_part_2 * 0.000001)
+qplot(data_set$classe, data_set$fulltimestamp, color=data_set$classe, 
+      xlab="Classe", ylab="Timestamp", geom="boxplot")
+
+```
+
+### Cleaning the data
+
+The data set contains a large amount of data that is stimply statistics calculated on the observed
+data. We'll remove the statistical data as well as the time series data, so they do not bias our 
+results.
+```{r}
+get_columns <- function(data){
+    # filter out statistical data columns
+    column_names <- names(data)
+    filter_columns <- c()
+    cleaned_data <- data$classe
+    stat_prefixes <- c('total', 'kurtosis', 'skewness', 'max', 'min', 'amplitude', 'var', 'stddev', 'avg')
+    for(prefix in stat_prefixes){
+        stat_columns <- grep(prefix, column_names)
+        filter_columns <- c(filter_columns, stat_columns)
+    }
+    
+    filtered_columns <- column_names[-filter_columns]
+    
+    # Grab only sensor related columns
+    required_columns <- 'classe'
+    sensors <- c('dumbbell', 'arm', 'belt')
+    for(sensor in sensors){
+        sensor_columns <- grep(sensor, filtered_columns)
+        sensor_colnames <- filtered_columns[sensor_columns]
+        required_columns <- c(required_columns, sensor_colnames)
+    }
+    return(required_columns)
+}
+
+desired_columns <- get_columns(data_set)
+data_set <- data_set[,desired_columns]
+```
+
+For a quick was to possibly eliminate weak predictors, we performed a near zero variance check
+and found no predictors to be near zero variance.
+```{r}
+inTrain <- createDataPartition(y=data_set$classe, p=0.8, list=FALSE)
+training_set <- data_set[inTrain,]
+testing_set <- data_set[-inTrain,]
+
+nearZeroVar(data_set, saveMetrics=TRUE)
+```
+
+### Cross-validation
+
+For the rest of feature selection, we'll let Caret's train function choose our predictors, but we
+analyze our best model using cross-validation.
+
+To find the best classification or regression model, we'll perform cross-validation with k-fold
+cross-validation, splitting the training data into 5 folds. This will validate a model fit of 80% of 
+the training data against 20% validation partition
+
+```{r, cache = T}
+library(parallel)
+library(doParallel)
+set.seed(172)
+
+folds = createFolds(training_set$classe, k=5)
+model_methods <- c('lda', 'rpart', 'treebag')
+
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+tc <- trainControl(allowParallel = TRUE)
+for(method in model_methods){
+    results <- sapply(folds, function(fold) {
+        training_fold <- training_set[-fold,]
+        validation_fold <- training_set[fold,]
+        print(sprintf('fitting new %s model', method))
+        if(method=='treebag'){
+            fit <- train(classe ~ ., method=method, trainControl=tc, data=training_fold)
+        } else {
+            fit <- train(classe ~ ., method=method, data=training_fold)
+        }
+        pred <- predict(fit, validation_fold)
+        result <- confusionMatrix(pred, validation_fold$classe)$overall['Accuracy']
+    })
+    print(sprintf('%s results: ', method))
+    print(results)
+}
+stopCluster(cluster)
+```
+
+From this we can see that Linear Discriminant Analysis is only producing about 69% accuracy on this
+data set. Classification and Regression Trees perform even worse, with only about 50% accuracy, while
+bagged trees result in estimated out of sample accuracy of 97%. We'll train our final model using 
+bagged CART, and allow caret's train function to choose our predictors.
+
+### Final Model
+
+```{r, cache = T}
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+tc <- trainControl(allowParallel = TRUE)
+finalModelFit <- train(classe ~ ., method='treebag', trainControl=tc, data=training_set)
+stopCluster(cluster)
+```
+
+
+### Results
+
+The accuracy of the model was tested against the 20% partition of the training data that was 
+reserved for the tesing set.
+
+```{r}
+predictions <- predict(finalModelFit, testing_set)
+accuracy <- sum(predictions == testing_set$classe)/length(predictions)
+print(accuracy)
+print(confusionMatrix(predictions, testing_set$classe)$overall['Accuracy'])
+```
+
+Based on evaluation against the reserved testing set, I believe afinal estimated Out of Sample 
+prediction accuracy of `r round(accuracy * 100, 2)`%. 
